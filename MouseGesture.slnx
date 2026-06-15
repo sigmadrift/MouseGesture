@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/MouseGesture.App/MouseGesture.App.csproj" />
+    <Project Path="src/MouseGesture.Core/MouseGesture.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/MouseGesture.Core.Tests/MouseGesture.Core.Tests.csproj" />
+  </Folder>
+</Solution>

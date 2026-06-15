@@ -1,0 +1,21 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="MouseGesture.App.Views.AboutWindow"
+        Title="MouseGesture 정보"
+        Width="380" SizeToContent="Height"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False">
+    <StackPanel Margin="20" Spacing="8">
+        <TextBlock Text="MouseGesture" FontSize="22" FontWeight="SemiBold"/>
+        <TextBlock x:Name="VersionText" Opacity="0.8"/>
+        <TextBlock Text="Windows 마우스 제스처 유틸리티" Opacity="0.7"/>
+        <Separator Margin="0,8,0,8"/>
+        <TextBlock Text="설정 파일" FontWeight="SemiBold" FontSize="12"/>
+        <SelectableTextBlock x:Name="ConfigPathText" FontSize="11" FontFamily="Consolas,Cascadia Mono,monospace"/>
+        <TextBlock Text="로그 폴더" FontWeight="SemiBold" FontSize="12" Margin="0,4,0,0"/>
+        <SelectableTextBlock x:Name="LogPathText" FontSize="11" FontFamily="Consolas,Cascadia Mono,monospace"/>
+        <Button Content="확인" HorizontalAlignment="Right" Padding="20,4" Margin="0,12,0,0"
+                Click="OnCloseClick"/>
+    </StackPanel>
+</Window>

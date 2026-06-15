@@ -1,0 +1,244 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:MouseGesture.App.ViewModels"
+        xmlns:core="using:MouseGesture.Core.Actions"
+        x:Class="MouseGesture.App.Views.SettingsWindow"
+        x:DataType="vm:SettingsViewModel"
+        Title="MouseGesture 설정"
+        Width="820" Height="720"
+        MinWidth="640" MinHeight="540"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="True">
+
+    <Window.Styles>
+        <Style Selector="Border.card">
+            <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="16"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+        </Style>
+        <Style Selector="TextBlock.section-title">
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,0,0,10"/>
+        </Style>
+        <Style Selector="TextBlock.label">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Opacity" Value="0.85"/>
+        </Style>
+        <Style Selector="Button.arrow">
+            <Setter Property="Width" Value="48"/>
+            <Setter Property="Height" Value="48"/>
+            <Setter Property="FontSize" Value="22"/>
+            <Setter Property="Padding" Value="0"/>
+        </Style>
+    </Window.Styles>
+
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Margin="20" Spacing="14">
+
+            <!-- Header -->
+            <StackPanel Spacing="4">
+                <TextBlock Text="MouseGesture 설정" FontSize="22" FontWeight="SemiBold"/>
+                <TextBlock Opacity="0.7" FontSize="13" TextWrapping="Wrap"
+                           Text="트리거 버튼을 누른 채 마우스를 4방향(↑ → ↓ ←)으로 움직여 단축키를 실행합니다. 짧게 누르면 일반 클릭으로 전달됩니다."/>
+            </StackPanel>
+
+            <!-- General -->
+            <Border Classes="card">
+                <StackPanel Spacing="12">
+                    <TextBlock Classes="section-title" Text="일반"/>
+
+                    <Grid ColumnDefinitions="160,*" RowDefinitions="Auto">
+                        <TextBlock Classes="label" Text="트리거 버튼"/>
+                        <ComboBox Grid.Column="1"
+                                  ItemsSource="{Binding TriggerOptions}"
+                                  SelectedItem="{Binding SelectedTrigger}"
+                                  Width="320" HorizontalAlignment="Left">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate x:DataType="vm:TriggerOption">
+                                    <TextBlock Text="{Binding Display}"/>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                    </Grid>
+
+                    <Grid ColumnDefinitions="160,*">
+                        <TextBlock Classes="label" Text="일시정지"/>
+                        <ToggleSwitch Grid.Column="1"
+                                      IsChecked="{Binding IsPaused}"
+                                      OffContent="제스처 인식 활성"
+                                      OnContent="일시정지 (모든 클릭 통과)"/>
+                    </Grid>
+
+                    <Grid ColumnDefinitions="160,*">
+                        <TextBlock Classes="label" Text="Windows 시작 시"/>
+                        <ToggleSwitch Grid.Column="1"
+                                      IsChecked="{Binding IsAutoStartEnabled}"
+                                      OffContent="수동 실행"
+                                      OnContent="자동 실행"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- Wheel amplification -->
+            <Border Classes="card">
+                <StackPanel Spacing="12">
+                    <TextBlock Classes="section-title" Text="휠 증폭"/>
+                    <TextBlock Opacity="0.7" FontSize="12" TextWrapping="Wrap"
+                               Text="지정한 사이드 버튼(기본: '뒤로' X1)을 누른 채 휠을 굴리면 한 칸당 설정한 배수만큼 스크롤합니다. 버튼만 짧게 누르면 원래 동작(예: 뒤로 가기)이 그대로 전달됩니다."/>
+                    <TextBlock Opacity="0.6" FontSize="11" TextWrapping="Wrap"
+                               Text="※ 모디파이어로 지정한 버튼은 누르고 있는 동안 일반 클릭/홀드(드래그·게임 입력 등)가 동작하지 않습니다. 그래서 평소 길게 누를 일이 적은 사이드 버튼(X1/X2)만 선택할 수 있습니다."/>
+
+                    <Grid ColumnDefinitions="160,*">
+                        <TextBlock Classes="label" Text="사용"/>
+                        <ToggleSwitch Grid.Column="1"
+                                      IsChecked="{Binding WheelEnabled}"
+                                      OffContent="사용 안 함"
+                                      OnContent="사용"/>
+                    </Grid>
+
+                    <Grid ColumnDefinitions="160,*">
+                        <TextBlock Classes="label" Text="누를 버튼"/>
+                        <ComboBox Grid.Column="1"
+                                  ItemsSource="{Binding WheelModifierOptions}"
+                                  SelectedItem="{Binding SelectedWheelModifier}"
+                                  IsEnabled="{Binding WheelEnabled}"
+                                  Width="320" HorizontalAlignment="Left">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate x:DataType="vm:TriggerOption">
+                                    <TextBlock Text="{Binding Display}"/>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                    </Grid>
+
+                    <Grid ColumnDefinitions="160,*">
+                        <TextBlock Classes="label" Text="스크롤 배수"/>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                            <NumericUpDown Value="{Binding WheelMultiplier}"
+                                           Minimum="{Binding WheelMultiplierMin}"
+                                           Maximum="{Binding WheelMultiplierMax}"
+                                           Increment="1" FormatString="0"
+                                           IsEnabled="{Binding WheelEnabled}"
+                                           Width="140"/>
+                            <TextBlock Classes="label" Text="배"/>
+                        </StackPanel>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- New mapping -->
+            <Border Classes="card">
+                <StackPanel Spacing="12">
+                    <TextBlock Classes="section-title" Text="새 매핑 추가"/>
+
+                    <!-- Live preview -->
+                    <Border Background="{DynamicResource SystemControlBackgroundAccentBrush}"
+                            CornerRadius="6" Padding="12,8" MinHeight="44">
+                        <StackPanel>
+                            <TextBlock Text="진행 중인 제스처" Foreground="White" Opacity="0.85" FontSize="11"/>
+                            <TextBlock Text="{Binding LiveStrokeArrows}"
+                                       Foreground="White" FontSize="22" MinHeight="30"
+                                       FontFamily="Segoe UI Symbol, Segoe UI"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 1. Action -->
+                    <Grid ColumnDefinitions="160,*">
+                        <TextBlock Classes="label" Text="① 동작"/>
+                        <ComboBox Grid.Column="1"
+                                  ItemsSource="{Binding AvailableActions}"
+                                  SelectedItem="{Binding SelectedAction}"
+                                  HorizontalAlignment="Stretch">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate x:DataType="core:IGestureAction">
+                                    <TextBlock Text="{Binding Name}"/>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                    </Grid>
+
+                    <!-- 2. Stroke editor -->
+                    <Grid ColumnDefinitions="160,*">
+                        <TextBlock Classes="label" Text="② 제스처 입력" VerticalAlignment="Top" Margin="0,12,0,0"/>
+                        <StackPanel Grid.Column="1" Spacing="8">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Button Classes="arrow" Content="↑" Command="{Binding AppendUpCommand}"    ToolTip.Tip="위"/>
+                                <Button Classes="arrow" Content="←" Command="{Binding AppendLeftCommand}"  ToolTip.Tip="왼쪽"/>
+                                <Button Classes="arrow" Content="↓" Command="{Binding AppendDownCommand}"  ToolTip.Tip="아래"/>
+                                <Button Classes="arrow" Content="→" Command="{Binding AppendRightCommand}" ToolTip.Tip="오른쪽"/>
+                                <Button Content="⌫"  Command="{Binding BackspaceCommand}"   Padding="14,0" Height="48" FontSize="18" ToolTip.Tip="한 칸 지우기"/>
+                                <Button Content="지우기" Command="{Binding ClearStrokeCommand}" Padding="14,0" Height="48"/>
+                            </StackPanel>
+                            <Border Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
+                                    CornerRadius="6" Padding="12,8" MinHeight="44">
+                                <TextBlock Text="{Binding NewStrokeArrows}"
+                                           FontSize="22" FontFamily="Segoe UI Symbol, Segoe UI"
+                                           VerticalAlignment="Center"/>
+                            </Border>
+                        </StackPanel>
+                    </Grid>
+
+                    <Grid ColumnDefinitions="160,*">
+                        <TextBlock Grid.Column="0"/>
+                        <Button Grid.Column="1"
+                                Content="매핑 추가"
+                                Command="{Binding AddBindingCommand}"
+                                HorizontalAlignment="Right"
+                                Padding="22,8"
+                                Classes="accent"/>
+                    </Grid>
+
+                    <TextBlock Text="{Binding StatusMessage}" Opacity="0.75" FontSize="12"/>
+                </StackPanel>
+            </Border>
+
+            <!-- Bindings + Recent -->
+            <Grid ColumnDefinitions="*,12,*" Height="280">
+                <Border Grid.Column="0" Classes="card" Padding="0">
+                    <DockPanel LastChildFill="True">
+                        <Border DockPanel.Dock="Top"
+                                Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
+                                Padding="14,10" CornerRadius="8,8,0,0">
+                            <TextBlock Text="현재 매핑" FontWeight="SemiBold"/>
+                        </Border>
+                        <ListBox ItemsSource="{Binding Bindings}" Background="Transparent" Padding="6,4">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate x:DataType="vm:BindingRow">
+                                    <Grid ColumnDefinitions="120,*,Auto" Margin="2,3" VerticalAlignment="Center">
+                                        <Border Background="{DynamicResource SystemAccentColorLight2Brush}"
+                                                CornerRadius="4" Padding="8,4" HorizontalAlignment="Left">
+                                            <TextBlock Text="{Binding StrokeArrows}"
+                                                       FontSize="16" FontWeight="SemiBold"
+                                                       FontFamily="Segoe UI Symbol, Segoe UI"/>
+                                        </Border>
+                                        <TextBlock Grid.Column="1" Text="{Binding Description}"
+                                                   Margin="10,0,0,0" VerticalAlignment="Center"/>
+                                        <Button Grid.Column="2" Content="삭제"
+                                                Command="{Binding RemoveCommand}" Padding="10,2"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </DockPanel>
+                </Border>
+
+                <Border Grid.Column="2" Classes="card" Padding="0">
+                    <DockPanel LastChildFill="True">
+                        <Border DockPanel.Dock="Top"
+                                Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
+                                Padding="14,10" CornerRadius="8,8,0,0">
+                            <TextBlock Text="최근 인식" FontWeight="SemiBold"/>
+                        </Border>
+                        <ListBox ItemsSource="{Binding RecentLog}" Background="Transparent"
+                                 FontFamily="Consolas, Cascadia Mono, Segoe UI"
+                                 FontSize="12" Padding="6,4"/>
+                    </DockPanel>
+                </Border>
+            </Grid>
+
+        </StackPanel>
+    </ScrollViewer>
+</Window>

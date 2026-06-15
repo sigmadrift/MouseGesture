@@ -1,0 +1,25 @@
+# Build artifacts
+bin/
+obj/
+publish/
+dist/
+
+# IDE
+.vs/
+.idea/
+*.user
+*.suo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Test results
+TestResults/
+*.trx
+
+# Inno Setup
+*.iss.bak
+
+# Claude Code local/machine settings (absolute paths, per-machine permissions)
+.claude/settings.local.json

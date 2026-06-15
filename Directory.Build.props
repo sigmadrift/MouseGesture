@@ -1,0 +1,14 @@
+<Project>
+  <PropertyGroup>
+    <Product>MouseGesture</Product>
+    <Company>ksy</Company>
+    <Authors>ksy</Authors>
+    <Copyright>Copyright (c) 2026 ksy</Copyright>
+    <Description>Windows 마우스 제스처 유틸리티</Description>
+    <Version>1.1.0</Version>
+    <FileVersion>1.1.0.0</FileVersion>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <InformationalVersion>1.1.0</InformationalVersion>
+    <NeutralLanguage>ko-KR</NeutralLanguage>
+  </PropertyGroup>
+</Project>

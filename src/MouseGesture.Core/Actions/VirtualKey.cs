@@ -1,0 +1,35 @@
+namespace MouseGesture.Core.Actions;
+
+/// <summary>Subset of Win32 virtual-key codes used by built-in actions.</summary>
+public enum VirtualKey : ushort
+{
+    None = 0,
+    Tab = 0x09,
+    Escape = 0x1B,
+    Left = 0x25,
+    Up = 0x26,
+    Right = 0x27,
+    Down = 0x28,
+    C = 0x43,
+    D = 0x44,
+    E = 0x45,
+    T = 0x54,
+    V = 0x56,
+    W = 0x57,
+    F4 = 0x73,
+    F5 = 0x74,
+    LWin = 0x5B,
+    LShift = 0xA0,
+    LControl = 0xA2,
+    LAlt = 0xA4,
+    BrowserBack = 0xA6,
+    BrowserForward = 0xA7,
+    BrowserRefresh = 0xA8,
+    VolumeMute = 0xAD,
+    VolumeDown = 0xAE,
+    VolumeUp = 0xAF,
+    MediaNextTrack = 0xB0,
+    MediaPrevTrack = 0xB1,
+    MediaStop = 0xB2,
+    MediaPlayPause = 0xB3,
+}
