@@ -35,13 +35,20 @@ public sealed class Win32InputSynthesizer : IInputSynthesizer
             Send([MakeMouse(down, data), MakeMouse(up, data)]);
     }
 
+    private static readonly TimeSpan NotchGap = TimeSpan.FromMilliseconds(1);
+
+    // Only ever used from the single input work-queue thread.
+    private readonly PreciseDelay _delay = new();
+
     /// <remarks>
     /// Emitting separate notches (rather than one big delta) makes apps that ignore the
     /// delta magnitude — and only scroll a fixed step per WM_MOUSEWHEEL — still amplify;
     /// apps that respect the magnitude get the same total.
-    /// Each notch is its own SendInput call with a 1 ms gap: several wheel events injected
-    /// in one batch (or back-to-back) get merged by Windows and some of them are lost —
-    /// measured: 3 batched notches consistently arrived as 240 instead of 360.
+    /// Each notch is its own SendInput call: several wheel events injected in one batch get
+    /// merged by Windows and some are lost (measured: 3 batched notches arrived as 240 of 360).
+    /// Separate calls always preserve the total; a ~1 ms gap also keeps them as distinct
+    /// messages (they started merging below ~0.5 ms). The gap must be a real 1 ms — see
+    /// <see cref="PreciseDelay"/> — or amplified scrolling becomes sluggish.
     /// </remarks>
     public void Wheel(int notchDelta, int count, bool horizontal)
     {
@@ -53,7 +60,7 @@ public sealed class Win32InputSynthesizer : IInputSynthesizer
         for (var i = 0; i < count; i++)
         {
             if (i > 0)
-                Thread.Sleep(1);
+                _delay.Wait(NotchGap);
             Send(input);
         }
     }

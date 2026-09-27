@@ -77,7 +77,8 @@ if ($SkipInstaller) {
 $iscc = $null
 foreach ($p in @(
     "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
-    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"   # per-user install (e.g. winget --scope user)
 )) { if (Test-Path $p) { $iscc = $p; break } }
 if (-not $iscc) {
     # (no ?. here: this script must also run on Windows PowerShell 5.1)

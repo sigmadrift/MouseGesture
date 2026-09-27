@@ -28,6 +28,28 @@ public sealed class AppSettingsTests
 }
 
 [TestClass]
+public sealed class ScreenProbeTests
+{
+    [TestMethod]
+    public void GetRunningApps_OnePerExecutable_ExcludesSelf()
+    {
+        var apps = ScreenProbe.GetRunningApps();
+        var self = Path.GetFileName(Environment.ProcessPath)!;
+
+        Assert.AreEqual(apps.Count, apps.Select(a => a.ProcessName).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.IsFalse(apps.Any(a => string.Equals(a.ProcessName, self, StringComparison.OrdinalIgnoreCase)));
+        Assert.IsTrue(apps.All(a => a.WindowTitle.Length > 0));
+    }
+
+    [TestMethod]
+    [DataRow(@" C:\Games\Game.EXE ", "game.exe")]
+    [DataRow("notepad", "notepad.exe")]
+    [DataRow("", "")]
+    public void NormalizeProcessName(string raw, string expected)
+        => Assert.AreEqual(expected, ScreenProbe.NormalizeProcessName(raw));
+}
+
+[TestClass]
 public sealed class StrokeFormatTests
 {
     [TestMethod]

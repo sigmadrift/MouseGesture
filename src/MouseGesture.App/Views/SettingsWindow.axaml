@@ -2,6 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:MouseGesture.App.ViewModels"
         xmlns:core="using:MouseGesture.Core.Actions"
+        xmlns:rec="using:MouseGesture.Core.Recognition"
         x:Class="MouseGesture.App.Views.SettingsWindow"
         x:DataType="vm:SettingsViewModel"
         Title="MouseGesture 설정"
@@ -125,7 +126,21 @@
                                      FontFamily="Consolas, Cascadia Mono, Segoe UI"/>
                             <StackPanel Orientation="Horizontal" Spacing="6">
                                 <Button Content="적용" Command="{Binding ApplyExcludedAppsCommand}"/>
-                                <Button Content="커서 아래 앱 추가 (3초 후)" Command="{Binding PickExcludedAppCommand}"/>
+                                <ComboBox ItemsSource="{Binding RunningApps}"
+                                          SelectedItem="{Binding SelectedRunningApp}"
+                                          IsDropDownOpen="{Binding IsRunningAppsOpen, Mode=TwoWay}"
+                                          PlaceholderText="실행 중인 앱에서 추가…"
+                                          Width="320" MaxDropDownHeight="360">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate x:DataType="rec:RunningApp">
+                                            <StackPanel Spacing="1">
+                                                <TextBlock Text="{Binding WindowTitle}" TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock Text="{Binding ProcessName}" FontSize="11" Opacity="0.6"
+                                                           FontFamily="Consolas, Cascadia Mono, Segoe UI"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
                             </StackPanel>
                         </StackPanel>
                     </Grid>

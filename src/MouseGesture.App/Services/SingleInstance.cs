@@ -41,8 +41,18 @@ public static class SingleInstance
     /// </summary>
     public static bool RequestExit(TimeSpan timeout)
     {
-        if (!Mutex.TryOpenExisting(MutexName, out var mutex))
-            return true;
+        Mutex? mutex;
+        try
+        {
+            if (!Mutex.TryOpenExisting(MutexName, out mutex))
+                return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // The running instance is elevated and we are not.
+            Logger.Warn("--exit: access denied to the running instance (run elevated).");
+            return false;
+        }
         using (mutex)
         {
             TrySignal(ExitEventName);
