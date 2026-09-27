@@ -35,6 +35,15 @@
         </Style>
     </Window.Styles>
 
+    <DockPanel>
+    <!-- Status bar: outside the scroller so messages are visible wherever the user is. -->
+    <Border DockPanel.Dock="Bottom"
+            Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
+            Padding="20,8"
+            IsVisible="{Binding StatusMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+        <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" FontSize="12"/>
+    </Border>
+
     <ScrollViewer HorizontalScrollBarVisibility="Disabled">
         <StackPanel Margin="20" Spacing="14">
 
@@ -42,8 +51,9 @@
             <StackPanel Spacing="4">
                 <TextBlock Text="MouseGesture 설정" FontSize="22" FontWeight="SemiBold"/>
                 <TextBlock Opacity="0.7" FontSize="13" TextWrapping="Wrap"
-                           Text="트리거 버튼을 누른 채 마우스를 4방향(↑ → ↓ ←)으로 움직여 단축키를 실행합니다. 짧게 누르면 일반 클릭으로 전달됩니다."/>
+                           Text="트리거 버튼을 누른 채 마우스를 4방향(↑ → ↓ ←)으로 움직여 단축키를 실행합니다. 방향을 이어서 그리면(예: ↑→) 여러 방향 제스처가 됩니다. 짧게 누르면 일반 클릭으로 전달됩니다."/>
             </StackPanel>
+
 
             <!-- General -->
             <Border Classes="card">
@@ -76,8 +86,48 @@
                         <TextBlock Classes="label" Text="Windows 시작 시"/>
                         <ToggleSwitch Grid.Column="1"
                                       IsChecked="{Binding IsAutoStartEnabled}"
+                                      IsEnabled="{Binding !IsAutoStartBusy}"
                                       OffContent="수동 실행"
                                       OnContent="자동 실행"/>
+                    </Grid>
+
+                    <Grid ColumnDefinitions="160,*">
+                        <TextBlock Classes="label" Text="누르고 기다리면"/>
+                        <StackPanel Grid.Column="1" Spacing="4">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <NumericUpDown Value="{Binding HoldTimeoutMs}"
+                                               Minimum="{Binding HoldTimeoutMin}"
+                                               Maximum="{Binding HoldTimeoutMax}"
+                                               Increment="100" FormatString="0"
+                                               Width="140"/>
+                                <TextBlock Classes="label" Text="ms 후 원래 동작 (0 = 사용 안 함)"/>
+                            </StackPanel>
+                            <TextBlock Opacity="0.6" FontSize="11" TextWrapping="Wrap"
+                                       Text="트리거/휠 증폭 버튼을 움직이지 않고 이 시간 이상 누르고 있으면 일반 누름으로 넘겨줍니다. 우클릭 드래그, 푸시투토크 같은 '누르고 있기' 동작이 그대로 동작합니다."/>
+                        </StackPanel>
+                    </Grid>
+
+                    <Grid ColumnDefinitions="160,*">
+                        <TextBlock Classes="label" Text="전체 화면 앱"/>
+                        <ToggleSwitch Grid.Column="1"
+                                      IsChecked="{Binding DisableInFullscreen}"
+                                      OffContent="제스처 사용"
+                                      OnContent="제스처·휠 증폭 끄기 (게임 등)"/>
+                    </Grid>
+
+                    <Grid ColumnDefinitions="160,*">
+                        <TextBlock Classes="label" Text="제외할 앱" VerticalAlignment="Top" Margin="0,6,0,0"/>
+                        <StackPanel Grid.Column="1" Spacing="6">
+                            <TextBox Text="{Binding ExcludedAppsText}"
+                                     AcceptsReturn="True" TextWrapping="NoWrap"
+                                     MinHeight="64" MaxHeight="140"
+                                     PlaceholderText="예: game.exe (한 줄에 하나)"
+                                     FontFamily="Consolas, Cascadia Mono, Segoe UI"/>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Button Content="적용" Command="{Binding ApplyExcludedAppsCommand}"/>
+                                <Button Content="커서 아래 앱 추가 (3초 후)" Command="{Binding PickExcludedAppCommand}"/>
+                            </StackPanel>
+                        </StackPanel>
                     </Grid>
                 </StackPanel>
             </Border>
@@ -89,7 +139,11 @@
                     <TextBlock Opacity="0.7" FontSize="12" TextWrapping="Wrap"
                                Text="지정한 사이드 버튼(기본: '뒤로' X1)을 누른 채 휠을 굴리면 한 칸당 설정한 배수만큼 스크롤합니다. 버튼만 짧게 누르면 원래 동작(예: 뒤로 가기)이 그대로 전달됩니다."/>
                     <TextBlock Opacity="0.6" FontSize="11" TextWrapping="Wrap"
-                               Text="※ 모디파이어로 지정한 버튼은 누르고 있는 동안 일반 클릭/홀드(드래그·게임 입력 등)가 동작하지 않습니다. 그래서 평소 길게 누를 일이 적은 사이드 버튼(X1/X2)만 선택할 수 있습니다."/>
+                               Text="※ 휠을 굴리지 않고 계속 누르고 있으면 '누르고 기다리면' 시간 뒤에 일반 누름으로 넘겨줍니다. 오른쪽/가운데 버튼의 드래그를 깨뜨리지 않도록 사이드 버튼(X1/X2)만 선택할 수 있고, 배수가 1이면 버튼을 가로채지 않습니다."/>
+                    <TextBlock Foreground="{DynamicResource SystemControlErrorTextForegroundBrush}"
+                               FontSize="12" TextWrapping="Wrap"
+                               IsVisible="{Binding IsWheelBlockedByTrigger}"
+                               Text="휠 증폭 버튼이 트리거 버튼과 같아서 현재 동작하지 않습니다. 다른 버튼을 선택하세요."/>
 
                     <Grid ColumnDefinitions="160,*">
                         <TextBlock Classes="label" Text="사용"/>
@@ -178,6 +232,8 @@
                                            FontSize="22" FontFamily="Segoe UI Symbol, Segoe UI"
                                            VerticalAlignment="Center"/>
                             </Border>
+                            <TextBlock Opacity="0.6" FontSize="11" TextWrapping="Wrap"
+                                       Text="{Binding MaxStrokeLength, StringFormat='최대 {0}방향. 짧은 제스처(예: ←)가 더 긴 제스처(←↑)의 앞부분이면, 짧은 쪽은 드래그 중이 아니라 버튼을 뗄 때 실행됩니다.'}"/>
                         </StackPanel>
                     </Grid>
 
@@ -191,7 +247,6 @@
                                 Classes="accent"/>
                     </Grid>
 
-                    <TextBlock Text="{Binding StatusMessage}" Opacity="0.75" FontSize="12"/>
                 </StackPanel>
             </Border>
 
@@ -241,4 +296,5 @@
 
         </StackPanel>
     </ScrollViewer>
+    </DockPanel>
 </Window>

@@ -5,10 +5,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
-    <IsAotCompatible>true</IsAotCompatible>
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
     <RootNamespace>MouseGesture.App</RootNamespace>
     <AssemblyName>MouseGesture.App</AssemblyName>

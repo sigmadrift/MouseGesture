@@ -2,15 +2,17 @@ namespace MouseGesture.App.Services;
 
 /// <summary>
 /// Minimal append-only logger writing to %LOCALAPPDATA%\MouseGesture\logs\app-yyyyMMdd.log.
-/// Files older than <see cref="RetentionDays"/> are pruned at startup.
+/// The file rolls over at midnight (the app typically runs for weeks), and files older
+/// than <see cref="RetentionDays"/> are pruned at startup and on each rollover.
 /// </summary>
 public static class Logger
 {
     private const int RetentionDays = 14;
 
     private static readonly object _lock = new();
-    private static string? _path;
     private static string? _dir;
+    private static DateOnly _currentDay;
+    private static string? _path;
 
     public static string? LogDirectory => _dir;
 
@@ -23,13 +25,11 @@ public static class Logger
                 "MouseGesture",
                 "logs");
             Directory.CreateDirectory(_dir);
-            _path = Path.Combine(_dir, $"app-{DateTime.Now:yyyyMMdd}.log");
-            Prune();
         }
         catch
         {
             // Logging must never crash the app.
-            _path = null;
+            _dir = null;
         }
     }
 
@@ -41,14 +41,23 @@ public static class Logger
 
     private static void Write(string level, string message)
     {
-        var path = _path;
-        if (path is null)
+        if (_dir is null)
             return;
-        var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [{level}] {message}{Environment.NewLine}";
+        var now = DateTime.Now;
+        var line = $"{now:yyyy-MM-dd HH:mm:ss.fff} [{level}] {message}{Environment.NewLine}";
         try
         {
             lock (_lock)
-                File.AppendAllText(path, line);
+            {
+                var today = DateOnly.FromDateTime(now);
+                if (_path is null || today != _currentDay)
+                {
+                    _currentDay = today;
+                    _path = Path.Combine(_dir, $"app-{now:yyyyMMdd}.log");
+                    Prune();
+                }
+                File.AppendAllText(_path, line);
+            }
         }
         catch
         {

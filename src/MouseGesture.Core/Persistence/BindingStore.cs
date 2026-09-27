@@ -4,7 +4,14 @@ using MouseGesture.Core.Recognition;
 
 namespace MouseGesture.Core.Persistence;
 
-/// <summary>Loads and saves gestures + trigger button as JSON in %APPDATA%/MouseGesture.</summary>
+/// <param name="CorruptBackupPath">
+/// Set when the file existed but could not be parsed: the original was copied here
+/// before defaults were used, so the next save can't silently destroy it.
+/// </param>
+/// <param name="SkippedEntries">Bindings dropped because of an invalid stroke or unknown action.</param>
+public sealed record LoadResult(GestureMap Map, AppSettings Settings, string? CorruptBackupPath, int SkippedEntries);
+
+/// <summary>Loads and saves gestures + settings as JSON in %APPDATA%/MouseGesture.</summary>
 public sealed class BindingStore
 {
     private readonly string _path;
@@ -16,6 +23,8 @@ public sealed class BindingStore
         _path = overridePath ?? DefaultPath();
     }
 
+    public string FilePath => _path;
+
     public static string DefaultPath()
     {
         var dir = Path.Combine(
@@ -24,83 +33,71 @@ public sealed class BindingStore
         return Path.Combine(dir, "bindings.json");
     }
 
-    /// <summary>Reads and parses the file, returning null if missing or unreadable.</summary>
-    private BindingsConfig? TryReadFile()
+    public LoadResult Load()
     {
         if (!File.Exists(_path))
-            return null;
+            return new LoadResult(GestureMap.CreateDefault(), AppSettings.Default, null, 0);
+
+        BindingsConfig? config;
         try
         {
             using var stream = File.OpenRead(_path);
-            return JsonSerializer.Deserialize(stream, BindingsJsonContext.Default.BindingsConfig);
+            config = JsonSerializer.Deserialize(stream, BindingsJsonContext.Default.BindingsConfig);
         }
         catch
         {
-            return null;
+            config = null;
         }
-    }
-
-    /// <summary>Returns the persisted map, or the default map if no file exists or it can't be read.</summary>
-    public GestureMap LoadOrDefault()
-    {
-        var config = TryReadFile();
         if (config is null)
-            return GestureMap.CreateDefault();
+            return new LoadResult(GestureMap.CreateDefault(), AppSettings.Default, BackupUnreadableFile(), 0);
 
         var map = new GestureMap();
-        foreach (var entry in config.Bindings)
+        var skipped = 0;
+        foreach (var entry in config.Bindings ?? [])
         {
-            if (string.IsNullOrEmpty(entry.Stroke))
+            var action = _registry.Get(entry.ActionId ?? "");
+            if (!StrokeFormat.TryNormalize(entry.Stroke, out var stroke) || action is null)
+            {
+                skipped++;
                 continue;
-            var action = _registry.Get(entry.ActionId);
-            if (action is null)
-                continue;
-            map.Bind(entry.Stroke, action);
+            }
+            map.Bind(stroke, action);
         }
-        return map;
+
+        var settings = new AppSettings(
+            ParseButton(config.Trigger, TriggerButton.Right),
+            new WheelSettings(
+                config.WheelAmplifyEnabled,
+                ParseButton(config.WheelModifierButton, WheelSettings.Default.Modifier),
+                config.WheelMultiplier),
+            config.HoldTimeoutMs,
+            config.DisableInFullscreen,
+            [.. config.ExcludedApps ?? []]).Normalized();
+
+        return new LoadResult(map, settings, null, skipped);
     }
 
-    /// <summary>Returns the saved trigger button (default <see cref="TriggerButton.Right"/>).</summary>
-    public TriggerButton LoadTrigger()
-    {
-        var config = TryReadFile();
-        if (config is null)
-            return TriggerButton.Right;
-        return Enum.TryParse<TriggerButton>(config.Trigger, ignoreCase: true, out var t)
-            ? t
-            : TriggerButton.Right;
-    }
-
-    /// <summary>Returns the saved wheel-amplification settings (or defaults).</summary>
-    public WheelSettings LoadWheelSettings()
-    {
-        var config = TryReadFile();
-        if (config is null)
-            return WheelSettings.Default;
-        var modifier = Enum.TryParse<TriggerButton>(config.WheelModifierButton, ignoreCase: true, out var m)
-            ? m
-            : WheelSettings.Default.Modifier;
-        return new WheelSettings(config.WheelAmplifyEnabled, modifier, config.WheelMultiplier).Normalized();
-    }
-
-    /// <summary>Saves the map, trigger, and wheel settings atomically.</summary>
-    public void Save(GestureMap map, TriggerButton trigger, WheelSettings wheel)
+    /// <summary>Saves the map and settings atomically (write temp file, then replace).</summary>
+    public void Save(GestureMap map, AppSettings settings)
     {
         var dir = Path.GetDirectoryName(_path);
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
 
-        var normalized = wheel.Normalized();
+        var normalized = settings.Normalized();
         var config = new BindingsConfig
         {
-            Trigger = trigger.ToString(),
+            Trigger = normalized.Trigger.ToString(),
             Bindings = map.Bindings
                 .OrderBy(p => p.Key, StringComparer.Ordinal)
                 .Select(p => new BindingEntry { Stroke = p.Key, ActionId = p.Value.Id })
                 .ToList(),
-            WheelAmplifyEnabled = normalized.Enabled,
-            WheelModifierButton = normalized.Modifier.ToString(),
-            WheelMultiplier = normalized.Multiplier,
+            WheelAmplifyEnabled = normalized.Wheel.Enabled,
+            WheelModifierButton = normalized.Wheel.Modifier.ToString(),
+            WheelMultiplier = normalized.Wheel.Multiplier,
+            HoldTimeoutMs = normalized.HoldTimeoutMs,
+            DisableInFullscreen = normalized.DisableInFullscreen,
+            ExcludedApps = [.. normalized.ExcludedApps],
         };
 
         var tmp = _path + ".tmp";
@@ -109,9 +106,20 @@ public sealed class BindingStore
         File.Move(tmp, _path, overwrite: true);
     }
 
-    /// <summary>Saves the map and trigger, preserving the previously saved wheel settings.</summary>
-    public void Save(GestureMap map, TriggerButton trigger) => Save(map, trigger, LoadWheelSettings());
+    private string? BackupUnreadableFile()
+    {
+        try
+        {
+            var backup = $"{_path}.corrupt-{DateTime.Now:yyyyMMdd-HHmmss}";
+            File.Copy(_path, backup, overwrite: true);
+            return backup;
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
-    /// <summary>Saves the map preserving the previously saved trigger and wheel settings.</summary>
-    public void Save(GestureMap map) => Save(map, LoadTrigger());
+    private static TriggerButton ParseButton(string? value, TriggerButton fallback) =>
+        Enum.TryParse<TriggerButton>(value, ignoreCase: true, out var b) && Enum.IsDefined(b) ? b : fallback;
 }

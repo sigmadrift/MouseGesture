@@ -76,6 +76,32 @@ public sealed class GestureMapTests
     }
 
     [TestMethod]
+    public void CanFireEarly_FalseWhileLongerBindingReachable()
+    {
+        var map = new GestureMap();
+        map.Bind("L", BuiltInActions.PreviousDesktop);
+        map.Bind("LU", BuiltInActions.TaskView);
+        map.Bind("R", BuiltInActions.NextDesktop);
+
+        Assert.IsFalse(map.CanFireEarly("L"));
+        Assert.IsTrue(map.CanFireEarly("LU"));
+        Assert.IsTrue(map.CanFireEarly("R"));
+        Assert.IsFalse(map.CanFireEarly("U"));
+    }
+
+    [TestMethod]
+    public void HasLongerBinding_OnlyForRealPrefixes()
+    {
+        var map = new GestureMap();
+        map.Bind("URD", BuiltInActions.TaskView);
+
+        Assert.IsTrue(map.HasLongerBinding("U"));
+        Assert.IsTrue(map.HasLongerBinding("UR"));
+        Assert.IsFalse(map.HasLongerBinding("URD"));
+        Assert.IsFalse(map.HasLongerBinding("R"));
+    }
+
+    [TestMethod]
     public void CreateDefault_ContainsFourCardinalBindings()
     {
         var map = GestureMap.CreateDefault();

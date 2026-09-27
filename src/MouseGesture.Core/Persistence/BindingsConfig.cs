@@ -12,11 +12,20 @@ public sealed class BindingsConfig
     /// <summary>Whether wheel amplification (modifier button + wheel) is enabled.</summary>
     public bool WheelAmplifyEnabled { get; set; } = true;
 
-    /// <summary>Button held to amplify the wheel. Enum name (Right/Middle/XButton1/XButton2).</summary>
+    /// <summary>Button held to amplify the wheel. Enum name (XButton1/XButton2).</summary>
     public string WheelModifierButton { get; set; } = "XButton1";
 
     /// <summary>Wheel notches emitted per physical notch while the modifier is held.</summary>
     public int WheelMultiplier { get; set; } = 3;
+
+    /// <summary>Hold time (ms) without movement after which the press is passed through. 0 = never.</summary>
+    public int HoldTimeoutMs { get; set; } = 500;
+
+    /// <summary>Leave the mouse alone over fullscreen windows (games, videos).</summary>
+    public bool DisableInFullscreen { get; set; } = true;
+
+    /// <summary>Process image names (e.g. "game.exe") where gestures and wheel amplification are off.</summary>
+    public List<string> ExcludedApps { get; set; } = new();
 }
 
 public sealed class BindingEntry

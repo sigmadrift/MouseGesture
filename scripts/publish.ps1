@@ -1,4 +1,4 @@
-#requires -version 5.1
+﻿#requires -version 5.1
 <#
 .SYNOPSIS
   Publishes MouseGesture as a self-contained, single-file Windows x64 build,
@@ -23,8 +23,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$root = Resolve-Path (Join-Path $PSScriptRoot '..')
-Set-Location $root
+$root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+Push-Location $root
+try {
 
 # Resolve version from Directory.Build.props if not supplied.
 if (-not $Version) {
@@ -78,7 +79,11 @@ foreach ($p in @(
     "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
 )) { if (Test-Path $p) { $iscc = $p; break } }
-if (-not $iscc) { $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue)?.Source }
+if (-not $iscc) {
+    # (no ?. here: this script must also run on Windows PowerShell 5.1)
+    $cmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($cmd) { $iscc = $cmd.Source }
+}
 
 if (-not $iscc) {
     Write-Warning 'Inno Setup (ISCC.exe) not found — skipping installer build. Install from https://jrsoftware.org/isdl.php to enable.'
@@ -90,3 +95,7 @@ $iss = Join-Path $PSScriptRoot 'installer.iss'
 & $iscc /Qp "/DMyAppVersion=$Version" "/DPublishDir=$publishDir" "/DOutputDir=$distDir" $iss
 if ($LASTEXITCODE -ne 0) { throw 'ISCC failed' }
 Write-Host 'Installer build complete.'
+}
+finally {
+    Pop-Location
+}
