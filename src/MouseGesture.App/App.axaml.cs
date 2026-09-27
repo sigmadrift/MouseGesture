@@ -45,7 +45,11 @@ public partial class App : Application
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
-            desktop.Exit += (_, _) => DisposeServices();
+            desktop.Exit += (_, _) =>
+            {
+                DisposeServices();
+                EnsureProcessExits();
+            };
 
             Dispatcher.UIThread.UnhandledException += (_, e) =>
             {
@@ -382,6 +386,28 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime d)
             d.Shutdown();
+    }
+
+    /// <summary>
+    /// When Windows ends the session — logoff, shutdown, or Restart Manager closing us for an
+    /// installer upgrade — Avalonia raises Exit but keeps its message loop running, expecting
+    /// the OS to kill the process. Restart Manager instead waits ~30 s before terminating it
+    /// (observed during an upgrade). On a normal shutdown Main returns within milliseconds and
+    /// this background thread dies with the process, so it only fires in that case.
+    /// </summary>
+    private static void EnsureProcessExits()
+    {
+        new Thread(() =>
+        {
+            Thread.Sleep(3000);
+            Logger.Warn("Process still alive 3s after shutdown (session end?); exiting.");
+            Logger.Info("=== MouseGesture exited ===");
+            Environment.Exit(0);
+        })
+        {
+            IsBackground = true,
+            Name = "MouseGesture.ExitWatchdog",
+        }.Start();
     }
 
     private void DisposeServices()

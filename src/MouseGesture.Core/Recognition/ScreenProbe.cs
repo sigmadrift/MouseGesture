@@ -3,6 +3,9 @@ using MouseGesture.Core.Native;
 
 namespace MouseGesture.Core.Recognition;
 
+/// <summary>An executable with a visible window, for picking apps to exclude.</summary>
+public sealed record RunningApp(string ProcessName, string WindowTitle);
+
 /// <summary>
 /// Answers "should we leave this press alone?" for the window under the cursor:
 /// true for excluded processes and (optionally) fullscreen windows such as games.
@@ -12,6 +15,15 @@ public sealed class ScreenProbe
 {
     private volatile FrozenSet<string> _excluded = FrozenSet<string>.Empty;
     private volatile bool _disableInFullscreen;
+
+    // Shell/system processes that own titled top-level windows but aren't apps a user
+    // would exclude (input host, Start menu, UWP frame host shared by all store apps, …).
+    private static readonly FrozenSet<string> ShellProcesses = new[]
+    {
+        "textinputhost.exe", "applicationframehost.exe", "shellexperiencehost.exe",
+        "startmenuexperiencehost.exe", "searchhost.exe", "searchapp.exe", "lockapp.exe",
+        "systemsettings.exe", "shellhost.exe",
+    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     public void Configure(IEnumerable<string> excludedProcessNames, bool disableInFullscreen)
     {
@@ -79,13 +91,41 @@ public sealed class ScreenProbe
         return 1.0;
     }
 
-    /// <summary>Lower-cased image file name of the process owning the window under the cursor, or null.</summary>
-    public static string? GetProcessNameUnderCursor()
+    /// <summary>
+    /// Apps that currently show a regular top-level window (roughly what the taskbar
+    /// shows), one entry per executable, sorted by name. Excludes this process.
+    /// </summary>
+    public static unsafe IReadOnlyList<RunningApp> GetRunningApps()
     {
-        if (!Win32.GetCursorPos(out var pt))
-            return null;
-        var hwnd = Win32.WindowFromPoint(pt);
-        return hwnd == IntPtr.Zero ? null : GetProcessName(Win32.GetAncestor(hwnd, Win32.GA_ROOT));
+        var ownPid = (uint)Environment.ProcessId;
+        var ownName = Path.GetFileName(Environment.ProcessPath ?? "").ToLowerInvariant();
+        var byName = new Dictionary<string, RunningApp>(StringComparer.OrdinalIgnoreCase);
+        var title = stackalloc char[256];
+
+        // Walk the top-level windows in Z order (front to back), so the first title seen
+        // for an executable is its most recently used window.
+        for (var hwnd = Win32.GetTopWindow(IntPtr.Zero); hwnd != IntPtr.Zero; hwnd = Win32.GetWindow(hwnd, Win32.GW_HWNDNEXT))
+        {
+            if (!Win32.IsWindowVisible(hwnd) || Win32.GetWindow(hwnd, Win32.GW_OWNER) != IntPtr.Zero)
+                continue;
+            if (((long)Win32.GetWindowLongPtr(hwnd, Win32.GWL_EXSTYLE) & Win32.WS_EX_TOOLWINDOW) != 0)
+                continue;
+            var len = Win32.GetWindowText(hwnd, title, 256);
+            if (len <= 0)
+                continue;
+
+            Win32.GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid == 0 || pid == ownPid)
+                continue;
+            var name = GetProcessName(hwnd);
+            if (name is null || byName.ContainsKey(name) || name == ownName || ShellProcesses.Contains(name))
+                continue;
+            // Windows on other virtual desktops are cloaked by DWM, so cloaking alone can't
+            // filter background windows; the shell-process list above handles the usual ones.
+            byName[name] = new RunningApp(name, new string(title, 0, len));
+        }
+
+        return [.. byName.Values.OrderBy(a => a.ProcessName, StringComparer.OrdinalIgnoreCase)];
     }
 
     private static unsafe bool IsFullscreen(IntPtr hwnd)

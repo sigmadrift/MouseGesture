@@ -46,6 +46,10 @@ internal static partial class Win32
     public const uint GA_ROOT = 2;
     public const uint MONITOR_DEFAULTTONEAREST = 2;
     public const int GWL_STYLE = -16;
+    public const int GWL_EXSTYLE = -20;
+    public const long WS_EX_TOOLWINDOW = 0x00000080;
+    public const uint GW_HWNDNEXT = 2;
+    public const uint GW_OWNER = 4;
     public const long WS_CAPTION = 0x00C00000;
     public const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
     public const int MDT_EFFECTIVE_DPI = 0;
@@ -210,6 +214,19 @@ internal static partial class Win32
 
     [LibraryImport("user32.dll")]
     public static partial IntPtr GetShellWindow();
+
+    [LibraryImport("user32.dll")]
+    public static partial IntPtr GetTopWindow(IntPtr hWnd);
+
+    [LibraryImport("user32.dll")]
+    public static partial IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool IsWindowVisible(IntPtr hWnd);
+
+    [LibraryImport("user32.dll", EntryPoint = "GetWindowTextW")]
+    public static unsafe partial int GetWindowText(IntPtr hWnd, char* lpString, int nMaxCount);
 
     [LibraryImport("user32.dll")]
     public static partial IntPtr GetDesktopWindow();

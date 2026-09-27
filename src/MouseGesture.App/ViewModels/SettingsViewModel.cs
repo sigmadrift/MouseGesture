@@ -87,6 +87,14 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private string _excludedAppsText = string.Empty;
 
+    public ObservableCollection<RunningApp> RunningApps { get; } = new();
+
+    [ObservableProperty]
+    private bool _isRunningAppsOpen;
+
+    [ObservableProperty]
+    private RunningApp? _selectedRunningApp;
+
     public SettingsViewModel(AppController controller, GestureDispatcher dispatcher, GestureRecognizer recognizer)
     {
         _controller = controller;
@@ -234,24 +242,29 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         StatusMessage = count == 0 ? "제외 앱 없음" : $"제외 앱 {count}개 적용됨";
     }
 
-    [RelayCommand]
-    private async Task PickExcludedAppAsync()
+    // Refresh the list each time the drop-down opens, so it reflects what's running now.
+    partial void OnIsRunningAppsOpenChanged(bool value)
     {
-        StatusMessage = "3초 안에 제외할 앱 창 위로 마우스를 옮기세요…";
-        await Task.Delay(3000);
-        var name = ScreenProbe.GetProcessNameUnderCursor();
-        if (name is null)
-        {
-            StatusMessage = "커서 아래 앱을 확인하지 못했습니다.";
+        if (!value)
             return;
-        }
-        if (string.Equals(name, Path.GetFileName(Environment.ProcessPath), StringComparison.OrdinalIgnoreCase))
+        var excluded = _controller.Settings.ExcludedApps.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        RunningApps.Clear();
+        foreach (var app in ScreenProbe.GetRunningApps())
         {
-            StatusMessage = "MouseGesture 자신은 제외할 수 없습니다.";
-            return;
+            if (!excluded.Contains(app.ProcessName))
+                RunningApps.Add(app);
         }
-        _controller.SetExcludedApps([.. _controller.Settings.ExcludedApps, name]);
-        StatusMessage = $"제외 앱 추가됨: {name}";
+    }
+
+    partial void OnSelectedRunningAppChanged(RunningApp? value)
+    {
+        if (value is null)
+            return;
+        _controller.SetExcludedApps([.. _controller.Settings.ExcludedApps, value.ProcessName]);
+        StatusMessage = $"제외 앱 추가됨: {value.ProcessName}";
+        // Reset so the same entry can be picked again later; posted because changing the
+        // selection from inside its own change notification doesn't reach the control.
+        Dispatcher.UIThread.Post(() => SelectedRunningApp = null);
     }
 
     [RelayCommand]
