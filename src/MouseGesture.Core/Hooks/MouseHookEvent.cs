@@ -12,6 +12,7 @@ public enum MouseEventType
     XButtonDown,
     XButtonUp,
     Wheel,
+    HWheel,
 }
 
 public readonly record struct MouseHookEvent(
@@ -22,5 +23,5 @@ public readonly record struct MouseHookEvent(
     int XButton,
     uint TimestampMs)
 {
-    public bool IsButtonEvent => Type is not MouseEventType.Move and not MouseEventType.Wheel;
+    public bool IsButtonEvent => Type is not MouseEventType.Move and not MouseEventType.Wheel and not MouseEventType.HWheel;
 }

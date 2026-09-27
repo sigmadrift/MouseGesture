@@ -8,9 +8,16 @@ namespace MouseGesture.Core.Hooks;
 /// <summary>
 /// Installs a global low-level mouse hook on a dedicated background thread
 /// with its own message pump. Single-instance per process.
+///
+/// Windows silently removes a low-level hook whose callback exceeds
+/// LowLevelHooksTimeout (e.g. during a long GC pause). A watchdog on the hook
+/// thread notices "the cursor moved and real input happened, but our hook saw
+/// nothing" and reinstalls the hook.
 /// </summary>
-public sealed class LowLevelMouseHook : IDisposable
+public sealed class LowLevelMouseHook : IMouseEventSource, IDisposable
 {
+    private const uint WatchdogIntervalMs = 3000;
+
     private static LowLevelMouseHook? s_instance;
 
     private readonly Subject<MouseHookEventArgs> _events = new();
@@ -21,7 +28,15 @@ public sealed class LowLevelMouseHook : IDisposable
     private volatile bool _running;
     private Exception? _startError;
 
+    // Watchdog state; hook thread only (the hook callback runs on the same thread).
+    private int _callbacksSinceCheck;
+    private Win32.POINT _lastCursor;
+    private uint _lastInputTick;
+
     public Observable<MouseHookEventArgs> Events => _events;
+
+    /// <summary>Raised (on the hook thread) with diagnostic messages such as hook reinstalls.</summary>
+    public event Action<string>? Diagnostic;
 
     public void Start()
     {
@@ -36,6 +51,8 @@ public sealed class LowLevelMouseHook : IDisposable
         {
             IsBackground = true,
             Name = "MouseGesture.Hook",
+            // Keep the callback responsive under load so Windows doesn't drop the hook.
+            Priority = ThreadPriority.Highest,
         };
         _thread.Start();
         ready.Wait();
@@ -48,22 +65,20 @@ public sealed class LowLevelMouseHook : IDisposable
         _running = true;
     }
 
-    private unsafe void HookThread(ManualResetEventSlim ready)
+    private void HookThread(ManualResetEventSlim ready)
     {
+        nuint timerId = 0;
         try
         {
             _threadId = Win32.GetCurrentThreadId();
-            var hModule = Win32.GetModuleHandle(null);
-            delegate* unmanaged[Stdcall]<int, nuint, nint, nint> proc = &HookProc;
-            _hookHandle = Win32.SetWindowsHookEx(Win32.WH_MOUSE_LL, (IntPtr)proc, hModule, 0);
-
-            if (_hookHandle == IntPtr.Zero)
+            if (!Install())
             {
                 _startError = new InvalidOperationException(
                     $"SetWindowsHookEx failed with error {Marshal.GetLastWin32Error()}.");
                 ready.Set();
                 return;
             }
+            timerId = Win32.SetTimer(IntPtr.Zero, 0, WatchdogIntervalMs, IntPtr.Zero);
         }
         catch (Exception ex)
         {
@@ -76,14 +91,74 @@ public sealed class LowLevelMouseHook : IDisposable
 
         while (Win32.GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
         {
+            if (msg.message == Win32.WM_TIMER && msg.hwnd == IntPtr.Zero)
+            {
+                CheckHookHealth();
+                continue;
+            }
             Win32.TranslateMessage(in msg);
             Win32.DispatchMessage(in msg);
         }
 
+        if (timerId != 0)
+            Win32.KillTimer(IntPtr.Zero, timerId);
         if (_hookHandle != IntPtr.Zero)
         {
             Win32.UnhookWindowsHookEx(_hookHandle);
             _hookHandle = IntPtr.Zero;
+        }
+    }
+
+    private unsafe bool Install()
+    {
+        var hModule = Win32.GetModuleHandle(null);
+        delegate* unmanaged[Stdcall]<int, nuint, nint, nint> proc = &HookProc;
+        _hookHandle = Win32.SetWindowsHookEx(Win32.WH_MOUSE_LL, (IntPtr)proc, hModule, 0);
+        ResetWatchdogBaseline();
+        return _hookHandle != IntPtr.Zero;
+    }
+
+    // Start each watch period from the current state; otherwise the first check compares
+    // against zeroed values and "detects" movement the hook never had a chance to see.
+    private void ResetWatchdogBaseline()
+    {
+        Win32.GetCursorPos(out _lastCursor);
+        var lii = new Win32.LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<Win32.LASTINPUTINFO>() };
+        Win32.GetLastInputInfo(ref lii);
+        _lastInputTick = lii.dwTime;
+        _callbacksSinceCheck = 0;
+    }
+
+    private void CheckHookHealth()
+    {
+        try
+        {
+            Win32.GetCursorPos(out var pos);
+            var lii = new Win32.LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<Win32.LASTINPUTINFO>() };
+            Win32.GetLastInputInfo(ref lii);
+
+            // SetCursorPos moves the cursor without counting as input, and keyboard input
+            // doesn't move the cursor, so requiring both avoids most false positives.
+            var cursorMoved = pos.X != _lastCursor.X || pos.Y != _lastCursor.Y;
+            var hadInput = lii.dwTime != _lastInputTick;
+            var hookSilent = _callbacksSinceCheck == 0;
+
+            _lastCursor = pos;
+            _lastInputTick = lii.dwTime;
+            _callbacksSinceCheck = 0;
+
+            if (!(cursorMoved && hadInput && hookSilent))
+                return;
+
+            if (_hookHandle != IntPtr.Zero)
+                Win32.UnhookWindowsHookEx(_hookHandle);
+            Diagnostic?.Invoke(Install()
+                ? "Mouse hook stopped receiving events (likely removed by Windows); reinstalled."
+                : $"Mouse hook reinstall failed with error {Marshal.GetLastWin32Error()}.");
+        }
+        catch
+        {
+            // Watchdog must never kill the hook thread.
         }
     }
 
@@ -99,12 +174,14 @@ public sealed class LowLevelMouseHook : IDisposable
         Interlocked.Exchange(ref s_instance, null);
     }
 
-    [UnmanagedCallersOnly(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvStdcall)])]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
     private static unsafe nint HookProc(int nCode, nuint wParam, nint lParam)
     {
         var instance = s_instance;
         if (instance is null || nCode < 0)
             return Win32.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+
+        instance._callbacksSinceCheck++;
 
         bool suppress = false;
         try
@@ -160,9 +237,11 @@ public sealed class LowLevelMouseHook : IDisposable
                 ev = new MouseHookEvent(MouseEventType.MiddleUp, x, y, 0, 0, time);
                 return true;
             case Win32.WM_MOUSEWHEEL:
+            case Win32.WM_MOUSEHWHEEL:
             {
                 var delta = (short)((data.mouseData >> 16) & 0xFFFF);
-                ev = new MouseHookEvent(MouseEventType.Wheel, x, y, delta, 0, time);
+                var type = msg == Win32.WM_MOUSEWHEEL ? MouseEventType.Wheel : MouseEventType.HWheel;
+                ev = new MouseHookEvent(type, x, y, delta, 0, time);
                 return true;
             }
             case Win32.WM_XBUTTONDOWN:

@@ -1,4 +1,4 @@
-; Inno Setup script for MouseGesture
+﻿; Inno Setup script for MouseGesture
 ; Build via scripts/publish.ps1 (which passes /D defines).
 
 #ifndef MyAppVersion
@@ -55,12 +55,18 @@ Name: "{group}\{#MyAppName} 제거";         Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}";        Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Registry]
-; HKCU autostart entry — only created if user opted in. Removed on uninstall.
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "MouseGesture"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue; Tasks: autostart
+; Older versions registered autostart via the HKCU Run key, which Windows silently skips for
+; elevated (requireAdministrator) apps. Remove that stale value; autostart is now a scheduled task.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "MouseGesture"; Flags: deletevalue uninsdeletevalue
 
 [Run]
+; Autostart = elevated logon task, registered by the app itself (same code path as the tray toggle).
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--register-autostart"; Flags: runhidden waituntilterminated; Tasks: autostart
 Filename: "{app}\{#MyAppExeName}"; Description: "{#MyAppName} 실행"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-; Best-effort: kill running instance before uninstall.
+; Ask the running instance to exit gracefully (saves pending settings), force-kill as a fallback,
+; then remove the logon task so it doesn't point at a deleted exe.
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--exit"; Flags: runhidden waituntilterminated; RunOnceId: "ExitApp"
 Filename: "{cmd}"; Parameters: "/C taskkill /IM {#MyAppExeName} /F"; Flags: runhidden; RunOnceId: "KillApp"
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--unregister-autostart"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveAutostart"

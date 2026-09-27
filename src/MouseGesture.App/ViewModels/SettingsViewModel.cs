@@ -10,21 +10,19 @@ using R3;
 
 namespace MouseGesture.App.ViewModels;
 
+/// <summary>
+/// Thin view over <see cref="AppController"/>: user edits are forwarded to it, and every
+/// controller change is mirrored back (so the tray and this window never disagree).
+/// </summary>
 public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 {
     private const int RecentLimit = 30;
 
-    private readonly GestureMap _map;
-    private readonly GestureRecognizer _recognizer;
-    private readonly WheelAmplifier _wheelAmplifier;
-    private readonly ActionRegistry _registry;
-    private readonly BindingStore _store;
+    private readonly AppController _controller;
     private readonly IDisposable _executedSub;
     private readonly IDisposable _strokeSub;
-    private bool _suppressTriggerSave;
-    private bool _suppressPause;
-    private bool _suppressAutoStart;
-    private bool _suppressWheelSave;
+    private bool _syncing;
+    private string? _syncedExcludedApps;
 
     public ObservableCollection<BindingRow> Bindings { get; } = new();
     public ObservableCollection<string> RecentLog { get; } = new();
@@ -34,6 +32,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public decimal WheelMultiplierMin => WheelSettings.MinMultiplier;
     public decimal WheelMultiplierMax => WheelSettings.MaxMultiplier;
+    public decimal HoldTimeoutMin => AppSettings.MinHoldTimeoutMs;
+    public decimal HoldTimeoutMax => AppSettings.MaxHoldTimeoutMs;
+    public int MaxStrokeLength => StrokeFormat.MaxLength;
 
     [ObservableProperty]
     private string _liveStroke = string.Empty;
@@ -63,50 +64,41 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private bool _isAutoStartEnabled;
 
     [ObservableProperty]
+    private bool _isAutoStartBusy;
+
+    [ObservableProperty]
     private bool _wheelEnabled;
+
+    [ObservableProperty]
+    private bool _isWheelBlockedByTrigger;
 
     [ObservableProperty]
     private TriggerOption _selectedWheelModifier = TriggerOption.WheelModifiers[0];
 
     [ObservableProperty]
-    private decimal _wheelMultiplier = WheelSettings.Default.Multiplier;
+    private decimal? _wheelMultiplier = WheelSettings.Default.Multiplier;
 
-    public SettingsViewModel(
-        GestureMap map,
-        GestureDispatcher dispatcher,
-        GestureRecognizer recognizer,
-        WheelAmplifier wheelAmplifier,
-        ActionRegistry registry,
-        BindingStore store)
+    [ObservableProperty]
+    private decimal? _holdTimeoutMs = AppSettings.Default.HoldTimeoutMs;
+
+    [ObservableProperty]
+    private bool _disableInFullscreen;
+
+    [ObservableProperty]
+    private string _excludedAppsText = string.Empty;
+
+    public SettingsViewModel(AppController controller, GestureDispatcher dispatcher, GestureRecognizer recognizer)
     {
-        _map = map;
-        _recognizer = recognizer;
-        _wheelAmplifier = wheelAmplifier;
-        _registry = registry;
-        _store = store;
-        AvailableActions = registry.AllActions;
+        _controller = controller;
+        AvailableActions = controller.Registry.AllActions;
         _selectedAction = AvailableActions.FirstOrDefault();
+
+        SyncFromController();
         RefreshBindings();
 
-        // Initialize from current state without triggering save side-effects.
-        _suppressTriggerSave = true;
-        _selectedTrigger = TriggerOption.ForValue(recognizer.Trigger);
-        _suppressTriggerSave = false;
-
-        _suppressPause = true;
-        _isPaused = !recognizer.IsEnabled;
-        _suppressPause = false;
-
-        _suppressAutoStart = true;
-        _isAutoStartEnabled = AutoStartManager.IsEnabled();
-        _suppressAutoStart = false;
-
-        _suppressWheelSave = true;
-        _wheelEnabled = wheelAmplifier.IsEnabled;
-        _selectedWheelModifier = WheelModifierOptions.FirstOrDefault(o => o.Value == wheelAmplifier.Modifier)
-            ?? WheelModifierOptions[0];
-        _wheelMultiplier = wheelAmplifier.Multiplier;
-        _suppressWheelSave = false;
+        _controller.StateChanged += OnControllerStateChanged;
+        _controller.BindingsChanged += RefreshBindings;
+        _controller.Notice += OnNotice;
 
         _executedSub = dispatcher.Executed.Subscribe(this, static (entry, self) =>
         {
@@ -114,7 +106,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             {
                 var arrows = DirectionExtensions.StrokeToArrows(entry.Gesture.Stroke);
                 var name = entry.Action?.Name ?? "(매핑 없음)";
-                self.RecentLog.Insert(0, $"{DateTime.Now:HH:mm:ss}  {arrows}  →  {name}");
+                var suffix = entry.Error is null ? "" : $"  ⚠ 실패: {entry.Error.Message}";
+                self.RecentLog.Insert(0, $"{DateTime.Now:HH:mm:ss}  {arrows}  →  {name}{suffix}");
                 while (self.RecentLog.Count > RecentLimit)
                     self.RecentLog.RemoveAt(self.RecentLog.Count - 1);
                 self.LiveStroke = string.Empty;
@@ -127,6 +120,46 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         });
     }
 
+    // Posted rather than applied inline: a change may originate from this VM's own
+    // property setter (e.g. a rejected combo selection), and re-setting a bound property
+    // from inside its change notification doesn't reliably reach the control.
+    private void OnControllerStateChanged() => Dispatcher.UIThread.Post(SyncFromController);
+
+    private void OnNotice(string message) => StatusMessage = message;
+
+    private void SyncFromController()
+    {
+        _syncing = true;
+        try
+        {
+            var s = _controller.Settings;
+            SelectedTrigger = TriggerOption.ForValue(s.Trigger);
+            IsPaused = _controller.IsPaused;
+            IsAutoStartEnabled = _controller.IsAutoStartEnabled;
+            IsAutoStartBusy = _controller.IsAutoStartBusy;
+            // The configured state, not the amplifier's live state (which is off while paused).
+            WheelEnabled = s.Wheel.Enabled;
+            IsWheelBlockedByTrigger = s.Wheel.Enabled && !s.IsWheelEffective;
+            SelectedWheelModifier = WheelModifierOptions.FirstOrDefault(o => o.Value == s.Wheel.Modifier)
+                ?? WheelModifierOptions[0];
+            WheelMultiplier = s.Wheel.Multiplier;
+            HoldTimeoutMs = s.HoldTimeoutMs;
+            DisableInFullscreen = s.DisableInFullscreen;
+            // Only when the applied list changed, so unrelated updates (pause, …) don't wipe
+            // edits the user hasn't applied yet.
+            var excluded = string.Join(Environment.NewLine, s.ExcludedApps);
+            if (excluded != _syncedExcludedApps)
+            {
+                ExcludedAppsText = excluded;
+                _syncedExcludedApps = excluded;
+            }
+        }
+        finally
+        {
+            _syncing = false;
+        }
+    }
+
     partial void OnLiveStrokeChanged(string value)
         => LiveStrokeArrows = DirectionExtensions.StrokeToArrows(value);
 
@@ -135,80 +168,90 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     partial void OnSelectedTriggerChanged(TriggerOption value)
     {
-        if (_suppressTriggerSave)
+        if (_syncing || value is null)
             return;
-        if (value.Value == SelectedWheelModifier.Value)
-        {
-            // Trigger and wheel modifier must differ; revert to the current trigger.
-            StatusMessage = "트리거와 휠 증폭 버튼은 같은 버튼을 쓸 수 없습니다.";
-            _suppressTriggerSave = true;
-            SelectedTrigger = TriggerOption.ForValue(_recognizer.Trigger);
-            _suppressTriggerSave = false;
-            return;
-        }
-        _recognizer.Trigger = value.Value;
-        _store.Save(_map, value.Value);
         StatusMessage = $"트리거 버튼: {value.Display}";
+        _controller.SetTrigger(value.Value); // may replace the message with a conflict notice
     }
 
     partial void OnIsPausedChanged(bool value)
     {
-        if (_suppressPause)
-            return;
-        _recognizer.IsEnabled = !value;
-        _wheelAmplifier.IsEnabled = !value && WheelEnabled;
-    }
-
-    partial void OnWheelEnabledChanged(bool value) => SaveWheel();
-
-    partial void OnSelectedWheelModifierChanged(TriggerOption value)
-    {
-        if (_suppressWheelSave)
-            return;
-        if (value.Value == SelectedTrigger.Value)
-        {
-            // Wheel modifier and trigger must differ; revert to the current modifier.
-            StatusMessage = "휠 증폭 버튼과 트리거는 같은 버튼을 쓸 수 없습니다.";
-            _suppressWheelSave = true;
-            SelectedWheelModifier = TriggerOption.ForValue(_wheelAmplifier.Modifier);
-            _suppressWheelSave = false;
-            return;
-        }
-        SaveWheel();
-    }
-
-    partial void OnWheelMultiplierChanged(decimal value)
-    {
-        var clamped = Math.Clamp(value, WheelMultiplierMin, WheelMultiplierMax);
-        if (clamped != value)
-        {
-            WheelMultiplier = clamped; // re-enters; the clamped pass performs the save
-            return;
-        }
-        SaveWheel();
-    }
-
-    private void SaveWheel()
-    {
-        if (_suppressWheelSave)
-            return;
-        var settings = new WheelSettings(WheelEnabled, SelectedWheelModifier.Value, (int)WheelMultiplier);
-        _wheelAmplifier.Apply(settings);
-        _store.Save(_map, _recognizer.Trigger, settings);
-        StatusMessage = WheelEnabled
-            ? $"휠 증폭: {SelectedWheelModifier.Display} + 휠 → {(int)WheelMultiplier}배"
-            : "휠 증폭 사용 안 함";
+        if (!_syncing)
+            _controller.SetPaused(value);
     }
 
     partial void OnIsAutoStartEnabledChanged(bool value)
     {
-        if (_suppressAutoStart)
+        if (!_syncing)
+            _ = _controller.SetAutoStartAsync(value);
+    }
+
+    partial void OnWheelEnabledChanged(bool value)
+    {
+        if (!_syncing)
+            _controller.SetWheelEnabled(value);
+    }
+
+    partial void OnSelectedWheelModifierChanged(TriggerOption value)
+    {
+        if (!_syncing && value is not null)
+            _controller.SetWheelModifier(value.Value);
+    }
+
+    partial void OnWheelMultiplierChanged(decimal? value)
+    {
+        if (_syncing)
             return;
-        AutoStartManager.Set(value);
-        // Re-read in case the registry write was rejected.
-        _suppressAutoStart = true;
-        IsAutoStartEnabled = AutoStartManager.IsEnabled();
-        _suppressAutoStart = false;
+        if (value is { } v)
+            _controller.SetWheelMultiplier((int)Math.Round(v));
+        else
+            OnControllerStateChanged(); // cleared box: restore the current value
+    }
+
+    partial void OnHoldTimeoutMsChanged(decimal? value)
+    {
+        if (_syncing)
+            return;
+        if (value is { } v)
+            _controller.SetHoldTimeout((int)Math.Round(v));
+        else
+            OnControllerStateChanged();
+    }
+
+    partial void OnDisableInFullscreenChanged(bool value)
+    {
+        if (!_syncing)
+            _controller.SetDisableInFullscreen(value);
+    }
+
+    [RelayCommand]
+    private void ApplyExcludedApps()
+    {
+        _syncedExcludedApps = null; // always show the normalized result
+        var names = ExcludedAppsText.Split(['\r', '\n', ',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        _controller.SetExcludedApps(names);
+        var count = _controller.Settings.ExcludedApps.Length;
+        StatusMessage = count == 0 ? "제외 앱 없음" : $"제외 앱 {count}개 적용됨";
+    }
+
+    [RelayCommand]
+    private async Task PickExcludedAppAsync()
+    {
+        StatusMessage = "3초 안에 제외할 앱 창 위로 마우스를 옮기세요…";
+        await Task.Delay(3000);
+        var name = ScreenProbe.GetProcessNameUnderCursor();
+        if (name is null)
+        {
+            StatusMessage = "커서 아래 앱을 확인하지 못했습니다.";
+            return;
+        }
+        if (string.Equals(name, Path.GetFileName(Environment.ProcessPath), StringComparison.OrdinalIgnoreCase))
+        {
+            StatusMessage = "MouseGesture 자신은 제외할 수 없습니다.";
+            return;
+        }
+        _controller.SetExcludedApps([.. _controller.Settings.ExcludedApps, name]);
+        StatusMessage = $"제외 앱 추가됨: {name}";
     }
 
     [RelayCommand]
@@ -240,8 +283,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private void AppendDirection(char dir)
     {
-        if (NewStroke.Length >= 8)
+        if (NewStroke.Length >= StrokeFormat.MaxLength)
+        {
+            StatusMessage = $"제스처는 최대 {StrokeFormat.MaxLength}방향까지 입력할 수 있습니다.";
             return;
+        }
         // Avoid recording the same direction twice in a row (matches the recognizer behavior).
         if (NewStroke.Length > 0 && NewStroke[^1] == dir)
             return;
@@ -251,44 +297,57 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void AddBinding()
     {
-        var stroke = NewStroke;
-        if (string.IsNullOrEmpty(stroke))
+        if (!StrokeFormat.TryNormalize(NewStroke, out var stroke))
         {
             StatusMessage = "방향 버튼으로 제스처를 입력해 주세요.";
             return;
         }
-        if (SelectedAction is null)
+        if (SelectedAction is not { } action)
         {
             StatusMessage = "동작을 선택해 주세요.";
             return;
         }
 
-        _map.Bind(stroke, SelectedAction);
-        _store.Save(_map, _recognizer.Trigger);
-        StatusMessage = $"매핑 추가됨: {DirectionExtensions.StrokeToArrows(stroke)} → {SelectedAction.Name}";
+        var arrows = DirectionExtensions.StrokeToArrows(stroke);
+        var previous = _controller.Bind(stroke, action);
+        StatusMessage = previous is not null && previous != action
+            ? $"{arrows}: '{previous.Name}' → '{action.Name}'(으)로 바꿨습니다."
+            : $"매핑 추가됨: {arrows} → {action.Name}";
+
+        // Explain why a shorter gesture no longer fires mid-drag.
+        var waiting = Enumerable.Range(1, stroke.Length - 1)
+            .Select(n => stroke[..n])
+            .Where(_controller.Map.IsBound)
+            .Select(DirectionExtensions.StrokeToArrows)
+            .ToList();
+        if (waiting.Count > 0)
+            StatusMessage += $" ({string.Join(", ", waiting)} 은(는) 이제 버튼을 뗄 때 실행됩니다.)";
+
         NewStroke = string.Empty;
-        RefreshBindings();
     }
 
     private void RemoveBinding(string stroke)
     {
-        if (_map.Unbind(stroke))
-        {
-            _store.Save(_map, _recognizer.Trigger);
+        if (_controller.Unbind(stroke))
             StatusMessage = $"매핑 삭제됨: {DirectionExtensions.StrokeToArrows(stroke)}";
-            RefreshBindings();
-        }
     }
 
     private void RefreshBindings()
     {
         Bindings.Clear();
-        foreach (var (stroke, action) in _map.Bindings.OrderBy(p => p.Key.Length).ThenBy(p => p.Key, StringComparer.Ordinal))
-            Bindings.Add(new BindingRow(stroke, action.Id, action.Name, RemoveBinding));
+        var map = _controller.Map;
+        foreach (var (stroke, action) in map.Bindings.OrderBy(p => p.Key.Length).ThenBy(p => p.Key, StringComparer.Ordinal))
+        {
+            var description = map.HasLongerBinding(stroke) ? $"{action.Name}  (뗄 때 실행)" : action.Name;
+            Bindings.Add(new BindingRow(stroke, action.Id, description, RemoveBinding));
+        }
     }
 
     public void Dispose()
     {
+        _controller.StateChanged -= OnControllerStateChanged;
+        _controller.BindingsChanged -= RefreshBindings;
+        _controller.Notice -= OnNotice;
         _executedSub.Dispose();
         _strokeSub.Dispose();
     }

@@ -9,20 +9,22 @@ using MouseGesture.App.ViewModels;
 using MouseGesture.App.Views;
 using MouseGesture.Core.Actions;
 using MouseGesture.Core.Hooks;
+using MouseGesture.Core.Input;
 using MouseGesture.Core.Persistence;
 using MouseGesture.Core.Recognition;
+using R3;
 
 namespace MouseGesture.App;
 
 public partial class App : Application
 {
+    private SerialWorkQueue? _inputQueue;
     private LowLevelMouseHook? _hook;
     private GestureRecognizer? _recognizer;
     private WheelAmplifier? _wheelAmplifier;
     private GestureDispatcher? _dispatcher;
-    private GestureMap? _map;
-    private ActionRegistry? _actionRegistry;
-    private BindingStore? _bindingStore;
+    private IDisposable? _executedLogSub;
+    private AppController? _controller;
     private TrayIcon? _trayIcon;
     private SettingsWindow? _settingsWindow;
     private AboutWindow? _aboutWindow;
@@ -30,8 +32,7 @@ public partial class App : Application
     private NativeMenuItem? _pauseItem;
     private NativeMenuItem? _autostartItem;
 
-    private EventWaitHandle? _showSettingsEvent;
-    private CancellationTokenSource? _shutdownCts;
+    private ManualResetEvent? _signalStop;
     private Thread? _signalThread;
 
     public override void Initialize()
@@ -54,45 +55,7 @@ public partial class App : Application
 
             try
             {
-                _actionRegistry = new ActionRegistry();
-                _bindingStore = new BindingStore(_actionRegistry);
-                _map = _bindingStore.LoadOrDefault();
-                var trigger = _bindingStore.LoadTrigger();
-                _hook = new LowLevelMouseHook();
-                _recognizer = new GestureRecognizer(_hook)
-                {
-                    Trigger = trigger,
-                    EarlyRecognize = _map.IsBound,
-                };
-                var wheelSettings = _bindingStore.LoadWheelSettings();
-                if (wheelSettings.Enabled && wheelSettings.Modifier == trigger)
-                {
-                    // Invalid config (e.g. hand-edited JSON): the same button can't be
-                    // both the gesture trigger and the wheel modifier. Disable wheel
-                    // amplification rather than have both features fight over the button.
-                    Logger.Warn($"Wheel modifier ({wheelSettings.Modifier}) equals trigger; disabling wheel amplification.");
-                    wheelSettings = wheelSettings with { Enabled = false };
-                }
-                _wheelAmplifier = new WheelAmplifier(_hook);
-                _wheelAmplifier.Apply(wheelSettings);
-                _dispatcher = new GestureDispatcher(_recognizer, _map);
-                Logger.Info($"Trigger: {trigger}; Wheel: {wheelSettings.Enabled} {wheelSettings.Modifier} x{wheelSettings.Multiplier}");
-
-                try
-                {
-                    _hook.Start();
-                    Logger.Info("Mouse hook installed.");
-                }
-                catch (Exception ex)
-                {
-                    Logger.Error("SetWindowsHookEx failed", ex);
-                    Dispatcher.UIThread.Post(() => ShowHookFailureDialog(ex.Message));
-                }
-
-                _trayIcon = BuildTrayIcon();
-                TrayIcon.SetIcons(this, [_trayIcon]);
-
-                StartSecondInstanceListener();
+                InitializeServices();
             }
             catch (Exception ex)
             {
@@ -102,6 +65,85 @@ public partial class App : Application
         }
 
         base.OnFrameworkInitializationCompleted();
+    }
+
+    private void InitializeServices()
+    {
+        var registry = new ActionRegistry();
+        var store = new BindingStore(registry);
+        var loaded = store.Load();
+        if (loaded.CorruptBackupPath is not null || loaded.SkippedEntries > 0)
+            Logger.Warn($"Config load: backup={loaded.CorruptBackupPath ?? "-"}, skipped entries={loaded.SkippedEntries}");
+
+        _inputQueue = new SerialWorkQueue("MouseGesture.Input");
+        _inputQueue.Faulted += ex => Logger.Error("Synthetic input failed", ex);
+
+        _hook = new LowLevelMouseHook();
+        _hook.Diagnostic += Logger.Warn;
+
+        var probe = new ScreenProbe();
+        var synthesizer = Win32InputSynthesizer.Instance;
+        _recognizer = new GestureRecognizer(_hook, _inputQueue, synthesizer)
+        {
+            EarlyRecognize = loaded.Map.CanFireEarly,
+            ShouldBypass = probe.ShouldBypass,
+            DpiScale = ScreenProbe.GetDpiScale,
+        };
+        _wheelAmplifier = new WheelAmplifier(_hook, _inputQueue, synthesizer)
+        {
+            ShouldBypass = probe.ShouldBypass,
+        };
+        _dispatcher = new GestureDispatcher(_recognizer, loaded.Map, _inputQueue);
+        _executedLogSub = _dispatcher.Executed.Subscribe(static e =>
+        {
+            if (e.Error is not null)
+                Logger.Error($"Action '{e.Action?.Id}' for gesture '{e.Gesture.Stroke}' failed", e.Error);
+        });
+
+        _controller = new AppController(loaded.Map, loaded.Settings, registry, store, _recognizer, _wheelAmplifier, probe);
+        _controller.StateChanged += UpdateTrayState;
+        _controller.Notice += OnControllerNotice;
+
+        var s = _controller.Settings;
+        Logger.Info($"Trigger: {s.Trigger}; Wheel: {s.Wheel.Enabled} {s.Wheel.Modifier} x{s.Wheel.Multiplier}; " +
+                    $"Hold: {s.HoldTimeoutMs}ms; Fullscreen off: {s.DisableInFullscreen}; Excluded: {s.ExcludedApps.Length}");
+
+        try
+        {
+            _hook.Start();
+            Logger.Info("Mouse hook installed.");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("SetWindowsHookEx failed", ex);
+            Dispatcher.UIThread.Post(() => ShowMessage(
+                "마우스 후크를 설치하지 못했습니다.", ex.Message, "다른 후킹 프로그램을 종료한 뒤 다시 실행해 보세요."));
+        }
+
+        _trayIcon = BuildTrayIcon();
+        TrayIcon.SetIcons(this, [_trayIcon]);
+
+        _ = _controller.RefreshAutoStartAsync();
+        _ = Task.Run(AutoStartManager.UpgradeIfNeeded);
+
+        StartSecondInstanceListener();
+
+        if (loaded.CorruptBackupPath is not null)
+        {
+            Dispatcher.UIThread.Post(() => ShowMessage(
+                "설정 파일을 읽지 못해 기본 설정으로 시작합니다.",
+                $"원본 파일은 다음 위치에 백업했습니다:\n{loaded.CorruptBackupPath}"));
+        }
+
+        if (SessionUserCheck.GetMismatchedSessionUser() is { } sessionUser)
+        {
+            Logger.Warn($"Running as {Environment.UserDomainName}\\{Environment.UserName} but session user is {sessionUser}.");
+            Dispatcher.UIThread.Post(() => ShowMessage(
+                "다른 관리자 계정으로 실행 중입니다.",
+                $"현재 로그인한 사용자({sessionUser})가 아니라 {Environment.UserName} 계정으로 실행되고 있습니다. " +
+                "설정·로그·자동 실행이 모두 그 계정에 저장되며, 자동 실행도 그 계정 로그인 시에만 동작합니다.",
+                "관리자 권한이 있는 본인 계정으로 실행하는 것을 권장합니다."));
+        }
     }
 
     private TrayIcon BuildTrayIcon()
@@ -114,20 +156,16 @@ public partial class App : Application
 
         menu.Add(new NativeMenuItemSeparator());
 
-        _pauseItem = new NativeMenuItem("일시정지")
-        {
-            ToggleType = MenuItemToggleType.CheckBox,
-            IsChecked = false,
-        };
-        _pauseItem.Click += (_, _) => TogglePaused();
+        _pauseItem = new NativeMenuItem("일시정지") { ToggleType = MenuItemToggleType.CheckBox };
+        _pauseItem.Click += (_, _) => _controller?.SetPaused(!_controller.IsPaused);
         menu.Add(_pauseItem);
 
-        _autostartItem = new NativeMenuItem("Windows 시작 시 자동 실행")
+        _autostartItem = new NativeMenuItem("Windows 시작 시 자동 실행") { ToggleType = MenuItemToggleType.CheckBox };
+        _autostartItem.Click += (_, _) =>
         {
-            ToggleType = MenuItemToggleType.CheckBox,
-            IsChecked = AutoStartManager.IsEnabled(),
+            if (_controller is not null)
+                _ = _controller.SetAutoStartAsync(!_controller.IsAutoStartEnabled);
         };
-        _autostartItem.Click += (_, _) => ToggleAutoStart();
         menu.Add(_autostartItem);
 
         menu.Add(new NativeMenuItemSeparator());
@@ -147,7 +185,32 @@ public partial class App : Application
             Menu = menu,
         };
         icon.Clicked += (_, _) => ShowSettings();
+
+        UpdateTrayState();
         return icon;
+    }
+
+    private void UpdateTrayState()
+    {
+        if (_controller is null)
+            return;
+        if (_pauseItem is not null)
+            _pauseItem.IsChecked = _controller.IsPaused;
+        if (_autostartItem is not null)
+        {
+            _autostartItem.IsChecked = _controller.IsAutoStartEnabled;
+            _autostartItem.IsEnabled = !_controller.IsAutoStartBusy;
+        }
+        if (_trayIcon is not null)
+            _trayIcon.ToolTipText = _controller.IsPaused ? "MouseGesture (일시정지)" : "MouseGesture";
+    }
+
+    private void OnControllerNotice(string message)
+    {
+        // The settings window shows notices in its status bar; otherwise (e.g. an action
+        // from the tray menu) surface it in a small window so it isn't lost.
+        if (_settingsWindow is not { IsVisible: true })
+            ShowMessage("MouseGesture", message);
     }
 
     private static WindowIcon LoadAppIcon()
@@ -184,31 +247,6 @@ public partial class App : Application
         return new WindowIcon(ms);
     }
 
-    private void TogglePaused()
-    {
-        if (_recognizer is null || _pauseItem is null)
-            return;
-        var active = !_recognizer.IsEnabled;
-        _recognizer.IsEnabled = active;
-        // Pause also stops wheel amplification so everything passes through; on resume
-        // restore the wheel feature to its configured on/off state.
-        if (_wheelAmplifier is not null)
-            _wheelAmplifier.IsEnabled = active && (_bindingStore?.LoadWheelSettings().Enabled ?? false);
-        _pauseItem.IsChecked = !active;
-        if (_trayIcon is not null)
-            _trayIcon.ToolTipText = active ? "MouseGesture" : "MouseGesture (일시정지)";
-        Logger.Info($"Pause: {!active}");
-    }
-
-    private void ToggleAutoStart()
-    {
-        if (_autostartItem is null)
-            return;
-        var nextState = !AutoStartManager.IsEnabled();
-        AutoStartManager.Set(nextState);
-        _autostartItem.IsChecked = AutoStartManager.IsEnabled();
-    }
-
     private void ShowSettings()
     {
         if (_settingsWindow is { IsVisible: true })
@@ -217,7 +255,7 @@ public partial class App : Application
             return;
         }
 
-        var vm = new SettingsViewModel(_map!, _dispatcher!, _recognizer!, _wheelAmplifier!, _actionRegistry!, _bindingStore!);
+        var vm = new SettingsViewModel(_controller!, _dispatcher!, _recognizer!);
         _settingsWindow = new SettingsWindow
         {
             DataContext = vm,
@@ -227,6 +265,7 @@ public partial class App : Application
         {
             vm.Dispose();
             _settingsWindow = null;
+            _controller?.FlushSave();
         };
         _settingsWindow.Show();
     }
@@ -246,36 +285,45 @@ public partial class App : Application
             _aboutWindow.Show();
     }
 
-    private static void ShowHookFailureDialog(string message)
+    private static void ShowMessage(string title, string message, string? hint = null)
     {
         var win = new Window
         {
             Title = "MouseGesture",
-            Width = 420,
+            Width = 440,
             SizeToContent = SizeToContent.Height,
             CanResize = false,
             WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            Icon = LoadAppIcon(),
         };
         var panel = new StackPanel { Margin = new Thickness(20), Spacing = 8 };
         panel.Children.Add(new TextBlock
         {
-            Text = "마우스 후크를 설치하지 못했습니다.",
+            Text = title,
             FontWeight = Avalonia.Media.FontWeight.SemiBold,
             FontSize = 14,
-        });
-        panel.Children.Add(new TextBlock
-        {
-            Text = message,
             TextWrapping = Avalonia.Media.TextWrapping.Wrap,
-            Opacity = 0.8,
         });
-        panel.Children.Add(new TextBlock
+        if (message != title)
         {
-            Text = "다른 후킹 프로그램을 종료한 뒤 다시 실행해 보세요.",
-            Opacity = 0.7,
-            FontSize = 12,
-            Margin = new Thickness(0, 6, 0, 0),
-        });
+            panel.Children.Add(new SelectableTextBlock
+            {
+                Text = message,
+                TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+                Opacity = 0.8,
+            });
+        }
+        if (hint is not null)
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text = hint,
+                Opacity = 0.7,
+                FontSize = 12,
+                TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+                Margin = new Thickness(0, 6, 0, 0),
+            });
+        }
         var btn = new Button { Content = "확인", Padding = new Thickness(20, 4), HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right };
         btn.Click += (_, _) => win.Close();
         panel.Children.Add(btn);
@@ -285,45 +333,47 @@ public partial class App : Application
 
     private void StartSecondInstanceListener()
     {
-        try
-        {
-            _showSettingsEvent = SingleInstance.CreateShowSettingsEvent();
-        }
-        catch (Exception ex)
-        {
-            Logger.Warn($"CreateShowSettingsEvent failed: {ex.Message}");
+        var showSettings = Program.ShowSettingsEvent;
+        var exit = Program.ExitEvent;
+        if (showSettings is null && exit is null)
             return;
-        }
 
-        _shutdownCts = new CancellationTokenSource();
-        var stopHandle = new ManualResetEvent(false);
-        _shutdownCts.Token.Register(() => stopHandle.Set());
+        // The stop handle is disposed by DisposeServices after joining, never by the thread.
+        var stop = _signalStop = new ManualResetEvent(false);
+        var handles = new List<WaitHandle> { stop };
+        if (showSettings is not null)
+            handles.Add(showSettings);
+        if (exit is not null)
+            handles.Add(exit);
+        var waitSet = handles.ToArray();
 
         _signalThread = new Thread(() =>
         {
-            var handles = new WaitHandle[] { _showSettingsEvent, stopHandle };
             try
             {
                 while (true)
                 {
-                    var idx = WaitHandle.WaitAny(handles);
-                    if (idx == 1)
-                        break;
-                    Dispatcher.UIThread.Post(ShowSettings);
+                    var signaled = waitSet[WaitHandle.WaitAny(waitSet)];
+                    if (signaled == stop)
+                        return;
+                    if (signaled == showSettings)
+                    {
+                        Dispatcher.UIThread.Post(ShowSettings);
+                        continue;
+                    }
+                    Logger.Info("Exit requested by another process.");
+                    Dispatcher.UIThread.Post(Shutdown);
+                    return;
                 }
             }
             catch (Exception ex)
             {
-                Logger.Error("Second-instance listener crashed", ex);
-            }
-            finally
-            {
-                stopHandle.Dispose();
+                Logger.Error("Instance signal listener crashed", ex);
             }
         })
         {
             IsBackground = true,
-            Name = "MouseGesture.SecondInstance",
+            Name = "MouseGesture.InstanceSignals",
         };
         _signalThread.Start();
     }
@@ -337,19 +387,21 @@ public partial class App : Application
     private void DisposeServices()
     {
         Logger.Info("Shutting down…");
-        _shutdownCts?.Cancel();
-        _signalThread?.Join(500);
-        _showSettingsEvent?.Dispose();
-        _showSettingsEvent = null;
-        _shutdownCts?.Dispose();
-        _shutdownCts = null;
+        _controller?.FlushSave();
+
+        _signalStop?.Set();
+        if (_signalThread?.Join(500) ?? true)
+            _signalStop?.Dispose();
+        _signalStop = null;
 
         _trayIcon?.Dispose();
         _trayIcon = null;
+        _executedLogSub?.Dispose();
         _dispatcher?.Dispose();
         _wheelAmplifier?.Dispose();
         _recognizer?.Dispose();
         _hook?.Dispose();
+        _inputQueue?.Dispose();
         _aboutWindow?.Close();
         _settingsWindow?.Close();
     }
